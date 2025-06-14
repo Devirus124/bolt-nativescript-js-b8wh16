@@ -1,28 +1,35 @@
 import { createClient } from "@supabase/supabase-js"
-import type { Database } from "@/types/supabase"
 
-// Create a single supabase client for the browser
-const createBrowserClient = () => {
-  const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL as string
-  const supabaseAnonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY as string
+const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL!
+const supabaseAnonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!
 
-  return createClient<Database>(supabaseUrl, supabaseAnonKey)
+export const supabase = createClient(supabaseUrl, supabaseAnonKey)
+
+// Types for our database tables
+export interface Contact {
+  id: string
+  name: string
+  email?: string
+  phone?: string
+  company?: string
+  role?: string
+  tags: string[]
+  created_at: string
+  updated_at: string
+  last_call_date?: string
 }
 
-// Singleton pattern for client-side Supabase client
-let browserClient: ReturnType<typeof createBrowserClient> | null = null
-
-export function getSupabaseBrowserClient() {
-  if (!browserClient) {
-    browserClient = createBrowserClient()
-  }
-  return browserClient
-}
-
-// Server-side client (for server components and API routes)
-export function getSupabaseServerClient() {
-  const supabaseUrl = process.env.SUPABASE_URL as string
-  const supabaseServiceKey = process.env.SUPABASE_SERVICE_ROLE_KEY as string
-
-  return createClient<Database>(supabaseUrl, supabaseServiceKey)
+export interface CallRecord {
+  id: string
+  contact_id?: string
+  contact_name: string
+  call_type: string
+  duration_seconds: number
+  status: "scheduled" | "in_progress" | "completed" | "missed" | "cancelled"
+  notes?: string
+  transcript?: string
+  call_script?: string
+  started_at?: string
+  ended_at?: string
+  created_at: string
 }
