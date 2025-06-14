@@ -1,152 +1,290 @@
-import { supabase, type Contact, type CallRecord } from "./supabase"
+import { supabase } from "./supabase"
+import type { Contact, CallHistory } from "./supabase"
+
+// Fallback database functions that use localStorage when Supabase is not available
+const isBrowser = typeof window !== "undefined"
+const isSupabaseConfigured = process.env.NEXT_PUBLIC_SUPABASE_URL && process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY
+
+// Local storage keys
+const CONTACTS_KEY = "ai-assistant-contacts-v2"
+const CALL_HISTORY_KEY = "ai-assistant-call-history-v2"
+
+// Helper functions for localStorage
+function getFromStorage<T>(key: string): T[] {
+  if (!isBrowser) return []
+  try {
+    const data = localStorage.getItem(key)
+    return data ? JSON.parse(data) : []
+  } catch (error) {
+    console.error(`Error reading from localStorage key ${key}:`, error)
+    return []
+  }
+}
+
+function saveToStorage<T>(key: string, data: T[]): void {
+  if (!isBrowser) return
+  try {
+    localStorage.setItem(key, JSON.stringify(data))
+  } catch (error) {
+    console.error(`Error saving to localStorage key ${key}:`, error)
+  }
+}
 
 // Contact operations
-export const contactService = {
-  // Get all contacts
-  async getAll(): Promise<Contact[]> {
-    const { data, error } = await supabase.from("contacts").select("*").order("name")
+export async function getContacts(): Promise<Contact[]> {
+  if (isSupabaseConfigured) {
+    const { data, error } = await supabase.from("contacts").select("*").order("created_at", { ascending: false })
 
-    if (error) throw error
+    if (error) {
+      console.error("Error fetching contacts:", error)
+      return []
+    }
+
     return data || []
-  },
+  }
 
-  // Search contacts
-  async search(query: string): Promise<Contact[]> {
-    const { data, error } = await supabase
-      .from("contacts")
-      .select("*")
-      .or(`name.ilike.%${query}%,company.ilike.%${query}%,email.ilike.%${query}%`)
-      .order("name")
+  return getFromStorage<Contact>(CONTACTS_KEY)
+}
 
-    if (error) throw error
-    return data || []
-  },
+export async function searchContacts(searchTerm: string): Promise<Contact[]> {
+  const contacts = await getContacts()
 
-  // Get contact by ID
-  async getById(id: string): Promise<Contact | null> {
-    const { data, error } = await supabase.from("contacts").select("*").eq("id", id).single()
+  if (!searchTerm.trim()) {
+    return contacts
+  }
 
-    if (error) throw error
+  return contacts.filter(
+    (contact) =>
+      contact.name.toLowerCase().includes(searchTerm.toLowerCase()) ||
+      (contact.company && contact.company.toLowerCase().includes(searchTerm.toLowerCase())) ||
+      (contact.email && contact.email.toLowerCase().includes(searchTerm.toLowerCase())),
+  )
+}
+
+export async function addContact(contactData: Omit<Contact, "id" | "created_at" | "updated_at">): Promise<Contact> {
+  if (isSupabaseConfigured) {
+    const { data, error } = await supabase.from("contacts").insert([contactData]).select().single()
+
+    if (error) {
+      console.error("Error adding contact:", error)
+      throw error
+    }
+
     return data
-  },
+  }
 
-  // Create new contact
-  async create(contact: Omit<Contact, "id" | "created_at" | "updated_at">): Promise<Contact> {
-    const { data, error } = await supabase.from("contacts").insert([contact]).select().single()
+  const contacts = getFromStorage<Contact>(CONTACTS_KEY)
 
-    if (error) throw error
-    return data
-  },
+  const newContact: Contact = {
+    ...contactData,
+    id: Date.now().toString(),
+    created_at: new Date().toISOString(),
+    updated_at: new Date().toISOString(),
+  }
 
-  // Update contact
-  async update(id: string, updates: Partial<Contact>): Promise<Contact> {
+  const updatedContacts = [newContact, ...contacts]
+  saveToStorage(CONTACTS_KEY, updatedContacts)
+
+  return newContact
+}
+
+export async function updateContact(id: string, updates: Partial<Contact>): Promise<Contact> {
+  if (isSupabaseConfigured) {
     const { data, error } = await supabase.from("contacts").update(updates).eq("id", id).select().single()
 
-    if (error) throw error
-    return data
-  },
+    if (error) {
+      console.error("Error updating contact:", error)
+      throw error
+    }
 
-  // Delete contact
-  async delete(id: string): Promise<void> {
+    return data
+  }
+
+  const contacts = getFromStorage<Contact>(CONTACTS_KEY)
+  const contactIndex = contacts.findIndex((c) => c.id === id)
+
+  if (contactIndex === -1) {
+    throw new Error("Contact not found")
+  }
+
+  const updatedContact = {
+    ...contacts[contactIndex],
+    ...updates,
+    updated_at: new Date().toISOString(),
+  }
+
+  contacts[contactIndex] = updatedContact
+  saveToStorage(CONTACTS_KEY, contacts)
+
+  return updatedContact
+}
+
+export async function deleteContact(id: string): Promise<void> {
+  if (isSupabaseConfigured) {
     const { error } = await supabase.from("contacts").delete().eq("id", id)
 
-    if (error) throw error
-  },
-
-  // Update last call date
-  async updateLastCallDate(id: string): Promise<void> {
-    const { error } = await supabase.from("contacts").update({ last_call_date: new Date().toISOString() }).eq("id", id)
-
-    if (error) throw error
-  },
+    if (error) {
+      console.error("Error deleting contact:", error)
+      throw error
+    }
+  } else {
+    const contacts = getFromStorage<Contact>(CONTACTS_KEY)
+    const filteredContacts = contacts.filter((c) => c.id !== id)
+    saveToStorage(CONTACTS_KEY, filteredContacts)
+  }
 }
 
 // Call history operations
-export const callHistoryService = {
-  // Get all call records
-  async getAll(): Promise<CallRecord[]> {
+export async function getCallHistory(): Promise<CallHistory[]> {
+  if (isSupabaseConfigured) {
     const { data, error } = await supabase.from("call_history").select("*").order("created_at", { ascending: false })
 
-    if (error) throw error
-    return data || []
-  },
+    if (error) {
+      console.error("Error fetching call history:", error)
+      return []
+    }
 
-  // Get call records for a specific contact
-  async getByContactId(contactId: string): Promise<CallRecord[]> {
+    return data || []
+  }
+
+  return getFromStorage<CallHistory>(CALL_HISTORY_KEY)
+}
+
+export async function startCall(
+  contactId: string,
+  contactName: string,
+  callType: string,
+  script?: string,
+): Promise<CallHistory> {
+  if (isSupabaseConfigured) {
     const { data, error } = await supabase
       .from("call_history")
-      .select("*")
-      .eq("contact_id", contactId)
-      .order("created_at", { ascending: false })
+      .insert([
+        {
+          contact_id: contactId,
+          contact_name: contactName,
+          call_type: callType,
+          status: "in_progress",
+          duration_seconds: 0,
+          script_used: script,
+        },
+      ])
+      .select()
+      .single()
 
-    if (error) throw error
-    return data || []
-  },
-
-  // Create new call record
-  async create(callRecord: Omit<CallRecord, "id" | "created_at">): Promise<CallRecord> {
-    const { data, error } = await supabase.from("call_history").insert([callRecord]).select().single()
-
-    if (error) throw error
-    return data
-  },
-
-  // Update call record
-  async update(id: string, updates: Partial<CallRecord>): Promise<CallRecord> {
-    const { data, error } = await supabase.from("call_history").update(updates).eq("id", id).select().single()
-
-    if (error) throw error
-    return data
-  },
-
-  // Start a call (create record with in_progress status)
-  async startCall(contactId: string, contactName: string, callType: string, script?: string): Promise<CallRecord> {
-    const callRecord = {
-      contact_id: contactId,
-      contact_name: contactName,
-      call_type: callType,
-      status: "in_progress" as const,
-      started_at: new Date().toISOString(),
-      call_script: script,
-      duration_seconds: 0,
+    if (error) {
+      console.error("Error starting call:", error)
+      throw error
     }
 
-    return await this.create(callRecord)
-  },
+    return data
+  }
 
-  // End a call
-  async endCall(id: string, durationSeconds: number, notes?: string, transcript?: string): Promise<CallRecord> {
-    return await this.update(id, {
-      status: "completed",
-      ended_at: new Date().toISOString(),
-      duration_seconds: durationSeconds,
-      notes,
-      transcript,
-    })
-  },
+  const callHistory = getFromStorage<CallHistory>(CALL_HISTORY_KEY)
 
-  // Get call statistics
-  async getStats(): Promise<{
-    totalCalls: number
-    completedCalls: number
-    averageDuration: number
-    successRate: number
-  }> {
-    const { data, error } = await supabase.from("call_history").select("status, duration_seconds")
+  const newCall: CallHistory = {
+    id: Date.now().toString(),
+    contact_id: contactId,
+    contact_name: contactName,
+    call_type: callType,
+    status: "in_progress",
+    duration_seconds: 0,
+    script_used: script,
+    created_at: new Date().toISOString(),
+    updated_at: new Date().toISOString(),
+  }
 
-    if (error) throw error
+  const updatedHistory = [newCall, ...callHistory]
+  saveToStorage(CALL_HISTORY_KEY, updatedHistory)
 
-    const totalCalls = data?.length || 0
-    const completedCalls = data?.filter((call) => call.status === "completed").length || 0
-    const totalDuration = data?.reduce((sum, call) => sum + (call.duration_seconds || 0), 0) || 0
-    const averageDuration = completedCalls > 0 ? Math.round(totalDuration / completedCalls) : 0
-    const successRate = totalCalls > 0 ? Math.round((completedCalls / totalCalls) * 100) : 0
+  return newCall
+}
 
-    return {
-      totalCalls,
-      completedCalls,
-      averageDuration,
-      successRate,
+export async function endCall(
+  callId: string,
+  durationSeconds: number,
+  notes?: string,
+  transcript?: string,
+): Promise<CallHistory> {
+  if (isSupabaseConfigured) {
+    const { data, error } = await supabase
+      .from("call_history")
+      .update({
+        duration_seconds: durationSeconds,
+        status: "completed",
+        notes,
+        transcript,
+      })
+      .eq("id", callId)
+      .select()
+      .single()
+
+    if (error) {
+      console.error("Error ending call:", error)
+      throw error
     }
-  },
+
+    return data
+  }
+
+  const callHistory = getFromStorage<CallHistory>(CALL_HISTORY_KEY)
+  const callIndex = callHistory.findIndex((c) => c.id === callId)
+
+  if (callIndex === -1) {
+    throw new Error("Call not found")
+  }
+
+  const updatedCall = {
+    ...callHistory[callIndex],
+    duration_seconds: durationSeconds,
+    status: "completed" as const,
+    notes,
+    transcript,
+    updated_at: new Date().toISOString(),
+  }
+
+  callHistory[callIndex] = updatedCall
+  saveToStorage(CALL_HISTORY_KEY, callHistory)
+
+  return updatedCall
+}
+
+export async function updateCallNotes(callId: string, notes: string): Promise<void> {
+  if (isSupabaseConfigured) {
+    const { error } = await supabase.from("call_history").update({ notes }).eq("id", callId)
+
+    if (error) {
+      console.error("Error updating call notes:", error)
+      throw error
+    }
+  } else {
+    const callHistory = getFromStorage<CallHistory>(CALL_HISTORY_KEY)
+    const callIndex = callHistory.findIndex((c) => c.id === callId)
+
+    if (callIndex !== -1) {
+      callHistory[callIndex] = {
+        ...callHistory[callIndex],
+        notes,
+        updated_at: new Date().toISOString(),
+      }
+      saveToStorage(CALL_HISTORY_KEY, callHistory)
+    }
+  }
+}
+
+export async function getCallStats() {
+  const calls = await getCallHistory()
+
+  const totalCalls = calls.length
+  const completedCalls = calls.filter((call) => call.status === "completed").length
+  const totalDuration = calls.reduce((sum, call) => sum + call.duration_seconds, 0)
+  const averageDuration = totalCalls > 0 ? Math.round(totalDuration / totalCalls) : 0
+  const successRate = totalCalls > 0 ? Math.round((completedCalls / totalCalls) * 100) : 0
+
+  return {
+    totalCalls,
+    completedCalls,
+    averageDuration,
+    successRate,
+  }
 }

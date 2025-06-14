@@ -33,9 +33,43 @@ import {
   Download,
 } from "lucide-react"
 import { useToast } from "@/hooks/use-toast"
-import { useContacts } from "@/hooks/use-contacts"
-import { useCallHistory } from "@/hooks/use-call-history"
-import type { Contact } from "@/lib/supabase"
+
+// Check if we're in development mode or if Supabase is not configured
+const isDevelopmentMode =
+  process.env.NODE_ENV === "development" ||
+  !process.env.NEXT_PUBLIC_SUPABASE_URL ||
+  !process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY
+
+// If in development or Supabase not configured, use localStorage
+const USE_LOCAL_STORAGE = isDevelopmentMode
+
+// Local storage helpers
+const CONTACTS_KEY = "ai-assistant-contacts-v2"
+const CALL_HISTORY_KEY = "ai-assistant-call-history-v2"
+
+type Contact = {
+  id: string
+  name: string
+  email?: string
+  phone?: string
+  company?: string
+  role?: string
+  tags: string[]
+  last_call_date?: string
+  created_at: string
+}
+
+type CallRecord = {
+  id: string
+  contact_id: string
+  contact_name: string
+  call_type: string
+  duration_seconds: number
+  status: "in_progress" | "completed" | "missed"
+  notes?: string
+  transcript?: string
+  created_at: string
+}
 
 // Speech Recognition Hook
 function useSpeechRecognition() {
@@ -58,18 +92,17 @@ function useSpeechRecognition() {
 
         recognition.onresult = (event: any) => {
           let finalTranscript = ""
-          let interimTranscript = ""
 
           for (let i = event.resultIndex; i < event.results.length; i++) {
             const transcriptPart = event.results[i][0].transcript
             if (event.results[i].isFinal) {
               finalTranscript += transcriptPart + " "
-            } else {
-              interimTranscript += transcriptPart
             }
           }
 
-          setTranscript((prev) => prev + finalTranscript)
+          if (finalTranscript) {
+            setTranscript((prev) => prev + finalTranscript)
+          }
         }
 
         recognition.onerror = (event: any) => {
@@ -150,7 +183,9 @@ export default function AIAssistantApp() {
   const [currentCallId, setCurrentCallId] = useState<string | null>(null)
   const [selectedCallType, setSelectedCallType] = useState("")
 
-  // Contact form
+  // Contact and history states
+  const [contacts, setContacts] = useState<Contact[]>([])
+  const [callHistory, setCallHistory] = useState<CallRecord[]>([])
   const [searchTerm, setSearchTerm] = useState("")
   const [isAddContactOpen, setIsAddContactOpen] = useState(false)
   const [newContact, setNewContact] = useState({
@@ -167,30 +202,41 @@ export default function AIAssistantApp() {
     useSpeechRecognition()
 
   const { toast } = useToast()
-  const { contacts, loading: contactsLoading, searchContacts, addContact, updateContact } = useContacts()
-  const { callHistory, stats, loading: historyLoading, startCall, endCall, updateCallNotes } = useCallHistory()
 
   // Timer ref
   const timerRef = useRef<NodeJS.Timeout | null>(null)
 
-  // Search contacts when search term changes
+  // Load data from localStorage on mount
   useEffect(() => {
-    const timeoutId = setTimeout(() => {
-      searchContacts(searchTerm)
-    }, 300)
+    const savedContacts = localStorage.getItem(CONTACTS_KEY)
+    const savedHistory = localStorage.getItem(CALL_HISTORY_KEY)
 
-    return () => clearTimeout(timeoutId)
-  }, [searchTerm])
-
-  // Update call transcript when speech recognition transcript changes
-  useEffect(() => {
-    if (transcript && isCallActive) {
-      // Auto-save transcript updates
-      if (currentCallId) {
-        updateCallNotes(currentCallId, `${callNotes}\n\nTranscript: ${transcript}`)
+    if (savedContacts) {
+      try {
+        setContacts(JSON.parse(savedContacts))
+      } catch (error) {
+        console.error("Failed to parse contacts from localStorage:", error)
       }
     }
-  }, [transcript])
+
+    if (savedHistory) {
+      try {
+        setCallHistory(JSON.parse(savedHistory))
+      } catch (error) {
+        console.error("Failed to parse call history from localStorage:", error)
+      }
+    }
+  }, [])
+
+  // Save contacts to localStorage whenever contacts change
+  useEffect(() => {
+    localStorage.setItem(CONTACTS_KEY, JSON.stringify(contacts))
+  }, [contacts])
+
+  // Save call history to localStorage whenever it changes
+  useEffect(() => {
+    localStorage.setItem(CALL_HISTORY_KEY, JSON.stringify(callHistory))
+  }, [callHistory])
 
   const promptCategories = [
     { id: "creative", name: "Creative Writing", icon: "✨" },
@@ -420,64 +466,82 @@ export default function AIAssistantApp() {
     })
   }
 
-  const handleStartCall = async (contact: Contact, callType: string) => {
-    try {
-      const callRecord = await startCall(contact.id, contact.name, callType, callScript)
-      setCurrentCallId(callRecord.id)
-      setSelectedContact(contact)
-      setIsCallActive(true)
-      setCallDuration(0)
-      setCallNotes("")
-      resetTranscript()
-
-      // Start timer
-      timerRef.current = setInterval(() => {
-        setCallDuration((prev) => prev + 1)
-      }, 1000)
-
-      toast({
-        title: "Call started",
-        description: `Started ${callType} call with ${contact.name}`,
-      })
-    } catch (error) {
-      console.error("Failed to start call:", error)
+  const handleStartCall = (contact: Contact, callType: string) => {
+    const callId = Date.now().toString()
+    const newCall: CallRecord = {
+      id: callId,
+      contact_id: contact.id,
+      contact_name: contact.name,
+      call_type: callType,
+      duration_seconds: 0,
+      status: "in_progress",
+      created_at: new Date().toISOString(),
     }
+
+    setCallHistory((prev) => [newCall, ...prev])
+    setCurrentCallId(callId)
+    setSelectedContact(contact)
+    setIsCallActive(true)
+    setCallDuration(0)
+    setCallNotes("")
+    resetTranscript()
+
+    // Start timer
+    timerRef.current = setInterval(() => {
+      setCallDuration((prev) => prev + 1)
+    }, 1000)
+
+    toast({
+      title: "Call started",
+      description: `Started ${callType} call with ${contact.name}`,
+    })
   }
 
-  const handleEndCall = async () => {
+  const handleEndCall = () => {
     if (!currentCallId) return
 
-    try {
-      await endCall(currentCallId, callDuration, callNotes, transcript)
+    // Update call record
+    setCallHistory((prev) =>
+      prev.map((call) =>
+        call.id === currentCallId
+          ? {
+              ...call,
+              duration_seconds: callDuration,
+              status: "completed" as const,
+              notes: callNotes,
+              transcript: transcript,
+            }
+          : call,
+      ),
+    )
 
-      // Update contact's last call date
-      if (selectedContact) {
-        await updateContact(selectedContact.id, {
-          last_call_date: new Date().toISOString(),
-        })
-      }
-
-      setIsCallActive(false)
-      setIsRecording(false)
-      setCurrentCallId(null)
-      setSelectedContact(null)
-
-      if (timerRef.current) {
-        clearInterval(timerRef.current)
-        timerRef.current = null
-      }
-
-      if (isListening) {
-        stopListening()
-      }
-
-      toast({
-        title: "Call ended",
-        description: `Call duration: ${Math.floor(callDuration / 60)}:${(callDuration % 60).toString().padStart(2, "0")}`,
-      })
-    } catch (error) {
-      console.error("Failed to end call:", error)
+    // Update contact's last call date
+    if (selectedContact) {
+      setContacts((prev) =>
+        prev.map((contact) =>
+          contact.id === selectedContact.id ? { ...contact, last_call_date: new Date().toISOString() } : contact,
+        ),
+      )
     }
+
+    setIsCallActive(false)
+    setIsRecording(false)
+    setCurrentCallId(null)
+    setSelectedContact(null)
+
+    if (timerRef.current) {
+      clearInterval(timerRef.current)
+      timerRef.current = null
+    }
+
+    if (isListening) {
+      stopListening()
+    }
+
+    toast({
+      title: "Call ended",
+      description: `Call duration: ${Math.floor(callDuration / 60)}:${(callDuration % 60).toString().padStart(2, "0")}`,
+    })
   }
 
   const toggleRecording = () => {
@@ -518,8 +582,6 @@ export default function AIAssistantApp() {
         return "bg-green-100 text-green-800"
       case "missed":
         return "bg-red-100 text-red-800"
-      case "scheduled":
-        return "bg-blue-100 text-blue-800"
       case "in_progress":
         return "bg-yellow-100 text-yellow-800"
       default:
@@ -527,7 +589,7 @@ export default function AIAssistantApp() {
     }
   }
 
-  const handleAddContact = async () => {
+  const handleAddContact = () => {
     if (!newContact.name.trim()) {
       toast({
         title: "Name required",
@@ -537,24 +599,37 @@ export default function AIAssistantApp() {
       return
     }
 
-    try {
-      const contactData = {
-        ...newContact,
-        tags: newContact.tags ? newContact.tags.split(",").map((tag) => tag.trim()) : [],
-      }
-      await addContact(contactData)
-      setNewContact({
-        name: "",
-        email: "",
-        phone: "",
-        company: "",
-        role: "",
-        tags: "",
-      })
-      setIsAddContactOpen(false)
-    } catch (error) {
-      console.error("Failed to add contact:", error)
+    const contact: Contact = {
+      id: Date.now().toString(),
+      name: newContact.name.trim(),
+      email: newContact.email.trim() || undefined,
+      phone: newContact.phone.trim() || undefined,
+      company: newContact.company.trim() || undefined,
+      role: newContact.role.trim() || undefined,
+      tags: newContact.tags
+        ? newContact.tags
+            .split(",")
+            .map((tag) => tag.trim())
+            .filter(Boolean)
+        : [],
+      created_at: new Date().toISOString(),
     }
+
+    setContacts((prev) => [contact, ...prev])
+    setNewContact({
+      name: "",
+      email: "",
+      phone: "",
+      company: "",
+      role: "",
+      tags: "",
+    })
+    setIsAddContactOpen(false)
+
+    toast({
+      title: "Contact added",
+      description: `${contact.name} has been added to your contacts`,
+    })
   }
 
   const formatDate = (dateString: string) => {
@@ -582,6 +657,28 @@ export default function AIAssistantApp() {
       title: "Export successful",
       description: `${type} data exported to ${filename}`,
     })
+  }
+
+  // Filter contacts based on search term
+  const filteredContacts = contacts.filter(
+    (contact) =>
+      contact.name.toLowerCase().includes(searchTerm.toLowerCase()) ||
+      (contact.company && contact.company.toLowerCase().includes(searchTerm.toLowerCase())) ||
+      (contact.email && contact.email.toLowerCase().includes(searchTerm.toLowerCase())),
+  )
+
+  // Calculate stats
+  const stats = {
+    totalCalls: callHistory.length,
+    completedCalls: callHistory.filter((call) => call.status === "completed").length,
+    averageDuration:
+      callHistory.length > 0
+        ? Math.round(callHistory.reduce((sum, call) => sum + call.duration_seconds, 0) / callHistory.length)
+        : 0,
+    successRate:
+      callHistory.length > 0
+        ? Math.round((callHistory.filter((call) => call.status === "completed").length / callHistory.length) * 100)
+        : 0,
   }
 
   // Cleanup timer on unmount
@@ -617,7 +714,7 @@ export default function AIAssistantApp() {
             </TabsTrigger>
             <TabsTrigger value="contacts" className="flex items-center gap-2">
               <Users className="w-4 h-4" />
-              Contacts
+              Contacts ({contacts.length})
             </TabsTrigger>
             <TabsTrigger value="history" className="flex items-center gap-2">
               <FileText className="w-4 h-4" />
@@ -867,7 +964,7 @@ export default function AIAssistantApp() {
                           <SelectContent>
                             {contacts.map((contact) => (
                               <SelectItem key={contact.id} value={contact.id}>
-                                {contact.name} - {contact.company}
+                                {contact.name} - {contact.company || "No company"}
                               </SelectItem>
                             ))}
                           </SelectContent>
@@ -1089,28 +1186,27 @@ export default function AIAssistantApp() {
               </div>
             </div>
 
-            {contactsLoading ? (
-              <div className="flex items-center justify-center py-8">
-                <Loader2 className="w-6 h-6 animate-spin mr-2" />
-                Loading contacts...
-              </div>
-            ) : contacts.length === 0 ? (
+            {filteredContacts.length === 0 ? (
               <Card>
                 <CardContent className="flex flex-col items-center justify-center py-8">
                   <Users className="w-12 h-12 text-gray-400 mb-4" />
-                  <h3 className="text-lg font-medium text-gray-900 mb-2">No contacts yet</h3>
+                  <h3 className="text-lg font-medium text-gray-900 mb-2">
+                    {contacts.length === 0 ? "No contacts yet" : "No contacts found"}
+                  </h3>
                   <p className="text-gray-600 text-center mb-4">
-                    Add your first contact to start making calls and tracking your conversations.
+                    {contacts.length === 0
+                      ? "Add your first contact to start making calls and tracking your conversations."
+                      : "Try adjusting your search terms or add a new contact."}
                   </p>
                   <Button onClick={() => setIsAddContactOpen(true)}>
                     <Plus className="w-4 h-4 mr-2" />
-                    Add Your First Contact
+                    {contacts.length === 0 ? "Add Your First Contact" : "Add New Contact"}
                   </Button>
                 </CardContent>
               </Card>
             ) : (
               <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-                {contacts.map((contact) => (
+                {filteredContacts.map((contact) => (
                   <Card key={contact.id} className="hover:shadow-md transition-shadow">
                     <CardContent className="p-4">
                       <div className="flex items-center gap-3 mb-3">
@@ -1119,7 +1215,7 @@ export default function AIAssistantApp() {
                         </div>
                         <div className="flex-1">
                           <h3 className="font-semibold">{contact.name}</h3>
-                          <p className="text-sm text-gray-600">{contact.role}</p>
+                          <p className="text-sm text-gray-600">{contact.role || "No role specified"}</p>
                         </div>
                       </div>
 
@@ -1240,12 +1336,7 @@ export default function AIAssistantApp() {
                 <CardDescription>Review your past calls and performance</CardDescription>
               </CardHeader>
               <CardContent>
-                {historyLoading ? (
-                  <div className="flex items-center justify-center py-8">
-                    <Loader2 className="w-6 h-6 animate-spin mr-2" />
-                    Loading call history...
-                  </div>
-                ) : callHistory.length === 0 ? (
+                {callHistory.length === 0 ? (
                   <div className="flex flex-col items-center justify-center py-8">
                     <PhoneCall className="w-12 h-12 text-gray-400 mb-4" />
                     <h3 className="text-lg font-medium text-gray-900 mb-2">No calls yet</h3>

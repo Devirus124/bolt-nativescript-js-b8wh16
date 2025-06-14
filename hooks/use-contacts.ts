@@ -1,24 +1,33 @@
 "use client"
 
 import { useState, useEffect } from "react"
-import { contactService, type Contact } from "@/lib/database"
+import {
+  getContacts,
+  searchContacts as searchContactsDB,
+  addContact as addContactDB,
+  updateContact as updateContactDB,
+  deleteContact as deleteContactDB,
+} from "@/lib/database"
+import type { Contact } from "@/lib/supabase"
 import { useToast } from "@/hooks/use-toast"
 
 export function useContacts() {
   const [contacts, setContacts] = useState<Contact[]>([])
   const [loading, setLoading] = useState(true)
-  const [error, setError] = useState<string | null>(null)
   const { toast } = useToast()
 
-  // Load contacts
+  // Load contacts on mount
+  useEffect(() => {
+    loadContacts()
+  }, [])
+
   const loadContacts = async () => {
     try {
       setLoading(true)
-      const data = await contactService.getAll()
+      const data = await getContacts()
       setContacts(data)
-      setError(null)
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to load contacts")
+    } catch (error) {
+      console.error("Failed to load contacts:", error)
       toast({
         title: "Error",
         description: "Failed to load contacts",
@@ -29,96 +38,88 @@ export function useContacts() {
     }
   }
 
-  // Search contacts
-  const searchContacts = async (query: string) => {
+  const searchContacts = async (searchTerm: string) => {
     try {
-      setLoading(true)
-      const data = query ? await contactService.search(query) : await contactService.getAll()
+      const data = await searchContactsDB(searchTerm)
       setContacts(data)
-      setError(null)
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to search contacts")
-      toast({
-        title: "Error",
-        description: "Failed to search contacts",
-        variant: "destructive",
-      })
-    } finally {
-      setLoading(false)
+    } catch (error) {
+      console.error("Failed to search contacts:", error)
     }
   }
 
-  // Add contact
-  const addContact = async (contactData: Omit<Contact, "id" | "created_at" | "updated_at">) => {
+  const addContact = async (contactData: {
+    name: string
+    email?: string
+    phone?: string
+    company?: string
+    role?: string
+    tags: string[]
+  }) => {
     try {
-      const newContact = await contactService.create(contactData)
+      const newContact = await addContactDB(contactData)
       setContacts((prev) => [newContact, ...prev])
       toast({
         title: "Success",
         description: "Contact added successfully",
       })
       return newContact
-    } catch (err) {
+    } catch (error) {
+      console.error("Failed to add contact:", error)
       toast({
         title: "Error",
         description: "Failed to add contact",
         variant: "destructive",
       })
-      throw err
+      throw error
     }
   }
 
-  // Update contact
   const updateContact = async (id: string, updates: Partial<Contact>) => {
     try {
-      const updatedContact = await contactService.update(id, updates)
+      const updatedContact = await updateContactDB(id, updates)
       setContacts((prev) => prev.map((contact) => (contact.id === id ? updatedContact : contact)))
       toast({
         title: "Success",
         description: "Contact updated successfully",
       })
       return updatedContact
-    } catch (err) {
+    } catch (error) {
+      console.error("Failed to update contact:", error)
       toast({
         title: "Error",
         description: "Failed to update contact",
         variant: "destructive",
       })
-      throw err
+      throw error
     }
   }
 
-  // Delete contact
   const deleteContact = async (id: string) => {
     try {
-      await contactService.delete(id)
+      await deleteContactDB(id)
       setContacts((prev) => prev.filter((contact) => contact.id !== id))
       toast({
         title: "Success",
         description: "Contact deleted successfully",
       })
-    } catch (err) {
+    } catch (error) {
+      console.error("Failed to delete contact:", error)
       toast({
         title: "Error",
         description: "Failed to delete contact",
         variant: "destructive",
       })
-      throw err
+      throw error
     }
   }
-
-  useEffect(() => {
-    loadContacts()
-  }, [])
 
   return {
     contacts,
     loading,
-    error,
-    loadContacts,
     searchContacts,
     addContact,
     updateContact,
     deleteContact,
+    refreshContacts: loadContacts,
   }
 }
