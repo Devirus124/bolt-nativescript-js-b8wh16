@@ -1,1 +1,1 @@
-Nothing should be ignored based on the provided file changes. The changes only include source/config files (.md files) and no build artifacts, dependencies, or temporary files.
+(prompts/02_ai_workflows_automation.md is a markdown file, which is a source/config file, so it should not be added to .gitignore)
